@@ -1,0 +1,285 @@
+# Data Preprocess
+import numpy as np
+import pandas as pd
+import re
+import string
+from collections import Counter
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+
+# Data Visualization
+import matplotlib.pyplot as plt
+import seaborn as sns
+            
+# Data Vectorization
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# process and tuning
+from imblearn.over_sampling import RandomOverSampler
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split, cross_val_score, KFold, GridSearchCV, RandomizedSearchCV, ShuffleSplit, cross_validate, validation_curve
+
+# ML Algorithm                   
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.linear_model import LogisticRegression, PassiveAggressiveClassifier, RidgeClassifierCV, SGDClassifier, Perceptron
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.svm import SVC
+from sklearn import svm, tree, linear_model, neighbors, naive_bayes, ensemble, discriminant_analysis, gaussian_process
+from xgboost import XGBClassifier
+
+# Metrics and Evaluation
+from sklearn.metrics import accuracy_score, classification_report, ConfusionMatrixDisplay
+
+#from sklearn.pipeline import Pipeline
+#from wordcloud import WordCloud
+#from string import punctuation
+#import plotly
+#import plotly.express as px
+#import plotly.io as pio
+import warnings
+warnings.filterwarnings("ignore")
+pd.set_option('display.max_colwidth', None)
+
+
+
+df = pd.read_csv('.../Customer_Sentiment.csv')
+
+df.shape[0]
+df.isna().sum()
+df = df.dropna()
+df.dtypes
+df = df.drop_duplicates(subset=['text'])
+df.head()
+
+description_list=[]
+for description in df['text']:
+    #Replace any character that is not a letter with a space
+    description = re.sub("[^a-zA-Z]", " ", description)
+    #Convert all letters to lower case
+    description = description.lower()
+    #Tokenize all words
+    description = nltk.word_tokenize(description)
+    #Filters out all the stopwords
+    description = [word for word in description if not word in set(stopwords.words("english"))]
+    #Lemmatized all tokens
+    lemma = nltk.WordNetLemmatizer()
+    description=[lemma.lemmatize(word) for word in description]
+    #Join list of words with space separated 
+    description = " ".join(description)
+    #Append to new list
+    description_list.append(description)
+    #Add the list to df as new column
+df["normalized_text_new"] = description_list
+df.head(5)
+
+df['temp_list'] = df['normalized_text_new'].apply(lambda x:str(x).split())
+top = Counter([item for sublist in df['temp_list'] for item in sublist])
+temp = pd.DataFrame(top.most_common(10))
+temp.columns = ['Common_words','count']
+temp.style.background_gradient(cmap='Blues')
+
+Positive_sent = df[df['sentiment']=='positive']
+Negative_sent = df[df['sentiment']=='negative']
+
+#Most common positive words
+top = Counter([item for sublist in Positive_sent['temp_list'] for item in sublist])
+temp_positive = pd.DataFrame(top.most_common(10))
+temp_positive.columns = ['Common_words','count']
+temp_positive.style.background_gradient(cmap='Greens')
+
+
+#Most common negative words
+top = Counter([item for sublist in Negative_sent['temp_list'] for item in sublist])
+temp_positive = pd.DataFrame(top.most_common(10))
+temp_positive.columns = ['Common_words','count']
+temp_positive.style.background_gradient(cmap='Reds')
+
+
+df['text_length'] = df['normalized_text_new'].str.split().apply(len)
+print(f"Text Mean:{df['text_length'].mean():.2}")
+print(f"Text Median:{df['text_length'].median()}")
+
+plt.figure(figsize=(6,4))
+ax = sns.countplot(x='text_length', data=df[df['text_length']<10], palette='mako')
+plt.title('Tweets with less than 10 words')
+plt.yticks([])
+for container in ax.containers:
+    ax.bar_label(container)
+plt.ylabel('count')
+plt.xlabel('')
+plt.show()
+
+df.shape
+
+df = df.sort_values(by='text_length', ascending=False)
+df.head(10)
+
+
+df = df[df['text_length'] > 0]
+df = df.iloc[4:]
+
+df['sentiment'].value_counts()
+
+
+# Initialize the RandomOverSampler to remove bias towards the majority classes
+ros = RandomOverSampler(random_state=42)
+# Resample the data
+X = df['normalized_text_new']
+y = df['sentiment']
+X_resampled, y_resampled = ros.fit_resample(X.values.reshape(-1, 1), y)
+# Convert resampled data back to DataFrame
+df = pd.DataFrame({'normalized_text_new': X_resampled.flatten(), 'sentiment': y_resampled})
+# Display the new class distribution
+df['sentiment'].value_counts()
+
+
+# Get X (tweets) and Y (labels)
+labenc = LabelEncoder()
+labels = labenc.fit_transform(df['sentiment'])
+tweets = df['normalized_text_new']
+
+# Train test split
+X_train, X_test, y_train, y_test = train_test_split(tweets, labels, test_size=0.3, random_state=42, stratify=labels)
+
+# Vectorize the tweets
+vectorizer = TfidfVectorizer()
+X_train_vec = vectorizer.fit_transform(X_train)
+X_test_vec = vectorizer.transform(X_test)
+
+
+# Define the classifiers (16)
+classifiers = [
+    ensemble.AdaBoostClassifier(),
+    ensemble.BaggingClassifier(),
+    ensemble.ExtraTreesClassifier(),
+    ensemble.GradientBoostingClassifier(),
+    ensemble.RandomForestClassifier(),
+    ##gaussian_process.GaussianProcessClassifier(),
+    linear_model.LogisticRegressionCV(),
+    linear_model.PassiveAggressiveClassifier(),
+    ##linear_model.RidgeClassifierCV(),
+    linear_model.SGDClassifier(),
+    linear_model.Perceptron(),
+    naive_bayes.BernoulliNB(),
+    ##naive_bayes.GaussianNB(),
+    neighbors.KNeighborsClassifier(),
+    MultinomialNB(),
+    #svm.SVC(probability=True),
+    #svm.NuSVC(probability=True),
+    svm.LinearSVC(),
+    tree.DecisionTreeClassifier(),
+    tree.ExtraTreeClassifier(),
+    ##discriminant_analysis.LinearDiscriminantAnalysis(),
+    ##discriminant_analysis.QuadraticDiscriminantAnalysis(),
+    XGBClassifier()
+]
+
+
+# Create a table to store the results
+#results = pd.DataFrame(columns=['Classifier', 'Train Accuracy', 'Test Accuracy'])
+results = []
+
+# Train and evaluate each classifier
+for clf in classifiers:
+    clf_name = clf.__class__.__name__
+    clf.fit(X_train_vec, y_train)
+    train_accuracy = clf.score(X_train_vec, y_train)
+    test_accuracy = clf.score(X_test_vec, y_test)
+    results.append({'Classifier': clf_name, 'Train Accuracy': train_accuracy, 'Test Accuracy': test_accuracy})
+
+# Convert the results to a DataFrame
+results = pd.DataFrame(results)
+
+# Print the results
+print(results.sort_values(by='Test Accuracy', ascending=False))
+
+
+# Create a table to store the results
+results = []
+
+# Set up k-fold cross-validation
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+# Train and evaluate each classifier with k-fold cross-validation
+for clf in classifiers:
+    clf_name = clf.__class__.__name__
+    cv_scores = cross_val_score(clf, X_train_vec, y_train, cv=kf)
+    results.append({
+        'Classifier': clf_name,
+        'Mean CV Accuracy': cv_scores.mean(),
+        'CV Std Dev': cv_scores.std()
+    })
+
+# Convert the results to a DataFrame
+#results_df = pd.DataFrame(results)
+
+# Print the results
+#results_df = results_df.sort_values(by='Mean CV Accuracy', ascending=False)
+print(f'Cross-Validation Scores: {cv_scores}')
+print(f'Mean CV Score: {sum(cv_scores) / len(cv_scores):.4}\nCV Std Dev: {cv_scores.std():.4}')
+
+
+
+# Random Forest Classifier
+rfc = ExtraTreesClassifier(random_state=42)
+
+# Define the parameter grid
+param_dist = {
+    'n_estimators': [int(x) for x in np.linspace(start=100, stop=500, num=5)],
+    'max_depth': [10, 20, 30, None],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2],
+    'bootstrap': [True]
+}
+
+# Initialize Random Search
+random_search_rfc = RandomizedSearchCV(estimator=rfc, param_distributions=param_dist, 
+                                       n_iter=50, cv=5, n_jobs=-1, random_state=42, verbose=3)
+
+# Fit the grid search to the data
+random_search_rfc.fit(X_train_vec, y_train)
+
+# Get the best parameters and model
+best_params = random_search_rfc.best_params_
+best_rfc = random_search_rfc.best_estimator_
+
+# Predict and evaluate
+y_pred = best_rfc.predict(X_test_vec)
+print("Best parameters found: ", best_params)
+print("Train accuracy:", best_rfc.score(X_train_vec, y_train))
+print("Test accuracy:", accuracy_score(y_test, y_pred))
+#print("Classification Report:\n", classification_report(y_test, y_pred, target_names=sentiments)
+
+
+
+
+def preprocess(text):
+    # Lowercase
+    text = text.lower()
+    # Remove punctuation
+    text = re.sub("[^a-zA-Z]", " ", text)
+    # Tokenize
+    words = nltk.word_tokenize(text)
+    # Remove stop words and lemmatize
+    words = [lemma.lemmatize(word) for word in words if word not in set(stopwords.words('english'))]
+    return ' '.join(words)
+
+
+
+# Example text input
+input_text = "This movie was good! I like every minute of it."
+
+#Preprocessthe input text
+process_input_text = preprocess(input_text)
+
+# Vectorize the input text
+X_input = vectorizer.transform([process_input_text])
+
+# Make predictions
+predicted_integer = final_model.predict(X_input)[0]
+predicted_sentiment = labenc.inverse_transform([predicted_integer])[0]
+
+# Print the predicted sentiment
+print("Predicted Sentiment:", predicted_sentiment)
