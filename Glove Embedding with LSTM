@@ -1,0 +1,203 @@
+import pandas as pd
+import numpy as np
+
+import re
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import SnowballStemmer
+
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
+
+import tensorflow as tf
+from tensorflow.keras.preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
+from keras.models import Sequential
+from keras.layers import Embedding, LSTM, Dense, Dropout
+from keras.initializers import Constant
+
+
+DATASET_COLUMNS = ["sentiment", "ids", "date", "flag", "user", "text"]
+DATASET_ENCODING = "ISO-8859-1"
+
+df = pd.read_csv('.../training.1600000.processed.noemoticon.csv',encoding = DATASET_ENCODING, names=DATASET_COLUMNS)
+df.head()
+df.shape
+
+df = df.drop(['ids', 'date', 'flag', 'user'], axis=1)
+df.isna().sum()
+
+df = df.drop_duplicates(subset=['text'])
+
+df['sentiment'] = df['sentiment'].replace(0, 'negative')
+df['sentiment'] = df['sentiment'].replace(4, 'positive')
+
+df['sentiment'].value_counts()
+
+df.head(5)
+
+# Shuffle the DataFrame
+df = df.sample(frac=1a).reset_index(drop=True)
+
+df = df.iloc[1300000:]
+
+stop_words = stopwords.words('english')
+stemmer = SnowballStemmer('english')
+text_cleaning_re = "@\S+|https?:\S+|http?:\S|[^A-Za-z0-9]+"
+
+def preprocess(text, stem=False):
+  text = re.sub(text_cleaning_re, ' ', str(text).lower()).strip()
+  tokens = []
+  for token in text.split():
+    if token not in stop_words:
+      if stem:
+        tokens.append(stemmer.stem(token))
+      else:
+        tokens.append(token)
+  return " ".join(tokens)
+
+df['new_text'] = df['text'].apply(lambda x: preprocess(x))
+
+#plt.figure(figsize = (20,20)) 
+#wc = WordCloud(max_words = 2000 , width = 1600 , height = 800).generate(" ".join(df['new_text'].astype(str)))
+#plt.imshow(wc , interpolation = 'bilinear')
+
+df['text_length'] = df['new_text'].str.split().apply(len)
+print(f"Text Mean:{df['text_length'].mean():.2}")
+print(f"Text Median:{df['text_length'].median()}")
+
+plt.figure(figsize=(6,4))
+ax = sns.countplot(x='text_length', data=df[df['text_length']<10], palette='mako')
+plt.title('Tweets with less than 10 words')
+plt.yticks([])
+for container in ax.containers:
+    ax.bar_label(container)
+plt.ylabel('count')
+plt.xlabel('')
+plt.show()
+
+df = df[df['text_length'] > 1]
+
+train_data['new_text'].apply(lambda x:len(str(x).split())).max()
+
+# Train test split
+train_data, test_data = train_test_split(df, test_size=0.2, random_state=42, shuffle=True)
+print("Train Data size:", len(train_data))
+print("Test Data size", len(test_data))
+
+train_data.head(10)
+
+tokenizer = Tokenizer()
+tokenizer.fit_on_texts(train_data.text)
+
+word_index = tokenizer.word_index
+vocab_size = len(tokenizer.word_index) + 1
+print("Vocabulary Size :", vocab_size)
+
+x_train = pad_sequences(tokenizer.texts_to_sequences(train_data.text),
+                        maxlen = 30)
+x_test = pad_sequences(tokenizer.texts_to_sequences(test_data.text),
+                       maxlen = 30)
+
+print(f'Training X Shape: {x_train.shape}')
+print(f'Testing X Shape: {x_test.shape}')
+
+labels = train_data['sentiment'].unique().tolist()
+
+# Get X (tweets) and Y (labels)
+labenc = LabelEncoder()
+labenc.fit(train_data['sentiment'].to_list())
+
+# Step 5: Build and train your model
+model = Sequential()
+embedding_layer = Embedding(
+    num_words,
+    embedding_dim,
+    embeddings_initializer=Constant(embedding_matrix),
+    input_length=max_sequence_length,
+    trainable=False
+)
+model.add(embedding_layer)
+model.add(LSTM(128, dropout=0.2, recurrent_dropout=0.2))
+model.add(Dense(1, activation='sigmoid'))
+
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+model.summary() = labenc.transform(train_data['sentiment'].to_list())
+y_test = labenc.transform(test_data['sentiment'].to_list())
+
+y_train = y_train.reshape(-1,1)
+print("y_train shape:", y_train.shape)
+
+y_train.shape
+
+glove_file_path = 'C:/Users/Tal Jacobi/glove.6B.300d.txt'
+embeddings_index = load_glove_embeddings(glove_file_path)
+
+def load_glove_embeddings(glove_file_path):
+    embeddings_index = {}
+    with open(glove_file_path, encoding='utf-8') as f:
+        for line in f:
+            values = line.split()
+            word = values[0]
+            coefs = np.asarray(values[1:], dtype='float32')
+            embeddings_index[word] = coefs
+    return embeddings_index
+
+embedding_dim = 100
+num_words = len(word_index) + 1
+
+embedding_matrix = np.zeros((num_words, embedding_dim))
+for word, i in word_index.items():
+    embedding_vector = embeddings_index.get(word)
+    if embedding_vector is not None:
+        embedding_matrix[i] = embedding_vector
+labels = np.asarray(labels)
+
+# Build and train your model
+model = Sequential()
+embedding_layer = Embedding(
+    num_words,
+    embedding_dim,
+    embeddings_initializer=Constant(embedding_matrix),
+    input_length=max_sequence_length,
+    trainable=False
+)
+model.add(embedding_layer)
+model.add(LSTM(128, dropout=0.2, recurrent_dropout=0.2))
+model.add(Dense(1, activation='sigmoid'))
+
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+model.summary()
+
+model.fit(x_train, y_train, epochs=10, batch_size=32, validation_data=(x_test, y_test), verbose=2)
+
+# Make predictions on the validation set
+y_pred_prob = model.predict(x_test)
+y_pred = (y_pred_prob > 0.5).astype(int)
+
+accuracy = accuracy_score(y_test, y_pred)
+print("Test accuracy:", accuracy_score(y_test, y_pred))
+print("Classification Report:\n", classification_report(y_test, y_pred))
+
+conf_matrix = confusion_matrix(y_test, y_pred)
+print('Confusion Matrix:')
+print(conf_matrix)
+
+conf_matrix_normalized = conf_matrix.astype('float') / conf_matrix.sum(axis=1)[:, np.newaxis]
+print('Normalized Confusion Matrix:')
+print(conf_matrix_normalized)
+
+# Confusion matrix using Seaborn
+plt.figure(figsize=(8, 6))
+sns.heatmap(conf_matrix_normalized, annot=True, fmt='.2f', cmap='Blues')
+plt.xlabel('Predicted Label')
+plt.ylabel('True Label')
+plt.title('Normalized Confusion Matrix')
+plt.show()
