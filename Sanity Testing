@@ -1,0 +1,507 @@
+import os
+import csv
+import time
+import shutil
+import pandas as pd
+from os import path
+import undetected_chromedriver as uc
+from selenium.common.exceptions import ElementClickInterceptedException, ElementNotInteractableException, NoSuchElementException, StaleElementReferenceException
+from selenium.webdriver import DesiredCapabilities
+from selenium.webdriver.chrome.webdriver import WebDriver
+from selenium import webdriver
+from selenium.webdriver.common import action_chains
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
+from selenium.webdriver.remote import webelement
+from selenium.webdriver.remote.webelement import WebElement
+
+ROOT_DIR = os.path.abspath(os.pardir)
+INPUT_CSV = "General - Automated Sanity Testing-BHW-NAM/resources/input.csv"
+RESULT = "General - Automated Sanity Testing-BHW-NAM/results"
+
+def create_new_csv(path,file_name,row_list):
+    with open(f'{path}/{file_name}.csv', 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerows(row_list)
+    return f'{path}/{file_name}.csv'
+
+def create_new_folder(folder_path):
+    try:
+        if path.exists(folder_path):
+            shutil.rmtree(folder_path)
+        os.mkdir(folder_path)
+    except Exception:
+        pass
+
+def create_dataframe_from_csv_file(csv_file_path, column_sort=None, ascending=False):
+    df = pd.read_csv(csv_file_path)
+    if column_sort is not None:
+        df = df.sort_values(by=[column_sort], ascending=ascending)
+    return df
+
+class LoginResources:
+    LOGIN_USERNAME_CSS = "input[name='userId']"
+    LOGIN_PASSWORD_CSS = "input[name='password'] ,[inputmask='password']"
+    LOGIN_BUTTON_CSS = "button[type='submit'][class='featured'],[type='submit']"
+    SIGN_OFF_BUTTON_CSS = "[data-link-type='sign_off']"
+
+class LoginActions:
+
+    def __init__(self, driver: WebDriver,url:str,user_name:str,password:str):
+        self.driver = driver
+        driver.get(url=url)
+        time.sleep(5)
+
+        self.insert_user_name(user_name=user_name)
+        self.insert_password(password=password)
+        self.click_on_login_button()
+        self.wait_until_element_displayed(By.CSS_SELECTOR, LoginResources.SIGN_OFF_BUTTON_CSS, 60, 1)
+        time.sleep(5)
+
+    def insert_user_name(self, user_name: str) -> bool:
+        self.wait_for_element_to_be_displayed_by_css_selector(LoginResources.LOGIN_USERNAME_CSS)
+        return self.insert_text_by_css_selector(LoginResources.LOGIN_USERNAME_CSS, user_name)
+
+    def insert_password(self, password) -> bool:
+        return self.insert_text_by_css_selector(LoginResources.LOGIN_PASSWORD_CSS, password)
+
+    def click_on_login_button(self) -> bool:
+        return self.click_enter_key()
+        #return self.click_on_element_by_css_selector(LoginResources.LOGIN_BUTTON_CSS)
+
+    # infra
+
+    def is_time_out(self,start_time_millis: int, waiting_interval_seconds: int) -> bool:
+        end_time = start_time_millis + waiting_interval_seconds * 1000
+        return int(time.time() * 1000) > end_time
+
+
+    def get_sub_elements(self, parent_element: WebElement, by: By, resource_value: str) -> list:
+        try:
+            if parent_element:
+                return parent_element.find_elements(by, resource_value) or []
+            return None
+        except NoSuchElementException:
+            return None
+
+
+    def get_element(self, by: By, value: str) -> WebElement:
+        try:
+
+            return self.driver.find_element(by, value)
+        except NoSuchElementException:
+            return None
+
+    def wait_for_element(
+            self, by: By, resource_value: str, check_is_displayed: bool,
+            parent_element: webelement = None,
+            time_out_in_seconds: int = 20) -> bool:
+        start_time = int(time.time() * 1000)
+        is_found = False
+
+        while not is_found and not self.is_time_out(start_time, time_out_in_seconds):
+            if parent_element:
+                element = self.get_sub_element(parent_element, by, resource_value)
+            else:
+                element = self.get_element(by, resource_value)
+
+            if element:
+                if check_is_displayed:
+                    is_found = self.is_element_displayed(element)
+                else:
+                    is_found = True
+
+        end_time = int(time.time() * 1000)
+        wait_duration_in_seconds = (end_time - start_time) / 1000
+
+        return is_found
+
+
+    def wait_for_element_to_be_displayed_by_css_selector(
+            self, css_selector: str, timeout_in_seconds=20) -> bool:
+        return self.wait_for_element(by=By.CSS_SELECTOR, resource_value=css_selector, check_is_displayed=True,
+                                      time_out_in_seconds=timeout_in_seconds)
+
+    def is_element_displayed(self, element: WebElement) -> bool:
+        try:
+            if element:
+                return element.is_displayed()
+            else:
+                return False
+        except (StaleElementReferenceException, NoSuchElementException):
+            return False
+
+    def wait_until_element_displayed(self, by: By, locator, retry, seconds):
+        is_exists = len(self.driver.find_elements(by, locator)) > 0 and self.is_element_displayed(self.driver.find_elements(by, locator)[0])
+        while not is_exists == True and retry > 0:
+            time.sleep(seconds)
+            retry = retry - 1
+            is_exists = len(self.driver.find_elements(by, locator)) > 0 and self.is_element_displayed(self.driver.find_elements(by, locator)[0])
+
+        if is_exists == True:
+            return True
+        else:
+            return False
+
+    def get_elements(self, by: By, resource_value: str) -> list:
+        try:
+            web_elements: list = self.driver.find_elements(by, resource_value)
+            return web_elements
+        except NoSuchElementException:
+            return []
+
+    def get_element_attribute(self, element: webelement, attribute_name: str) -> str:
+        if element:
+            return element.get_attribute(attribute_name)
+        return ''
+
+    def get_element_text(self, element: WebElement) -> str:
+        try:
+            if element:
+                text = element.text
+                if not text:
+                    return str.strip(self.get_element_attribute(element, "textContent"))
+                else:
+                    return str.strip(text)
+            else:
+                return ''
+        except StaleElementReferenceException:
+            return ''
+
+    def clear_text(self, element: WebElement) -> bool:
+        element.clear()
+        element_text = self.get_element_text(element)
+        return element_text == ''
+
+    def click_enter_key(self):
+        action = action_chains.ActionChains(self.driver)
+        action.send_keys(Keys.ENTER).perform()
+
+    def insert_text(self, element: WebElement, text_to_insert: str,
+                    delay_in_milliseconds: int = 10) -> bool:
+        if element:
+            self.clear_text(element)
+            element.click()
+            for c in text_to_insert:
+                element.send_keys(c)
+                time.sleep(delay_in_milliseconds / 1000)
+            time.sleep(1)
+            return True
+        return False
+
+    def insert_text_by_css_selector(self, css_selector: str, text_to_insert: str,
+                                    delay_in_milliseconds: int = None) -> bool:
+        delay_in_milliseconds = 10
+        element = self.get_element_by_css_selector(css_selector)
+        return self.insert_text(element, text_to_insert, delay_in_milliseconds)
+
+    def wait_until_element_disappear(self, by: By, locator, retry, seconds):
+        is_exists = len(self.driver.find_elements(by, locator)) > 0
+        while is_exists == True and retry > 0:
+            time.sleep(seconds)
+            retry = retry - 1
+            is_exists = len(self.driver.find_elements(by, locator)) > 0
+
+        if is_exists == False:
+            return True
+        else:
+            return False
+
+    def wait_until_element_appear(self, by: By, locator, retry, seconds):
+        is_not_exists = len(self.driver.find_elements(by, locator)) == 0
+        while is_not_exists == True and retry > 0:
+            time.sleep(seconds)
+            retry = retry - 1
+            is_not_exists = len(self.driver.find_elements(by, locator)) == 0
+
+        if is_not_exists == False:
+            return True
+        else:
+            return False
+
+    def get_elements_by_css_selector(self, css_selector: str) -> list:
+        return self.get_elements(By.CSS_SELECTOR, css_selector)
+
+    def click_on_element(self, element: WebElement) -> bool:
+        try:
+            if element:
+                element.click()
+                return True
+            return False
+        except (ElementClickInterceptedException, ElementNotInteractableException) as e:
+            return False
+
+    def click_on_element_by_css_selector(self, selector: str) -> bool:
+        element = self.get_element_by_css_selector(selector)
+        return self.click_on_element(element)
+
+
+    def get_element_by_css_selector(self, css_selector: str):
+        return self.get_element(By.CSS_SELECTOR, css_selector)
+
+class BotResources:
+
+    BOT_ICON_CSS = "[id='covaEyes'],[id='chatBotIcon'],[id='openChatWindow']"
+    CHAT_FOOTER_AVAILABLE_CSS = "[class='kore-chat-footer']"
+    INSERT_TEXT_TO_CHAT_CSS = "[placeholder='Message...'],[aria-placeholder='Message...'],[aria-label='Message']"
+    MESSAGES = "[aria-live='assertive']"
+    MOVING_DOTS = "[class='movingDots']"
+    NO_OPTION = '[class="buttonTmplContentBox"] li[value=No]'
+    NO_OPTION_TEMPLATE = '[class="buttonTmplContentBox"]'
+
+class BotActions:
+
+    def __init__(self, driver: WebDriver):
+        self.driver = driver
+        self.click_on_icon()
+        self.wait_until_element_appear(By.CSS_SELECTOR, BotResources.CHAT_FOOTER_AVAILABLE_CSS, 60, 1)
+
+    def click_on_icon(self) -> bool:
+        return self.click_on_element_by_css_selector(BotResources.BOT_ICON_CSS)
+
+    def insert_message(self,message):
+        self.insert_text_by_css_selector(BotResources.INSERT_TEXT_TO_CHAT_CSS,message)
+        return self.click_enter_key()
+
+#    def insert_message(self,message):
+#        self.insert_text_by_css_selector(BotResources.INSERT_TEXT_TO_CHAT_CSS,message)
+#        self.click_enter_key()
+#        self.wait_until_element_appear(By.CSS_SELECTOR, BotResources.NO_OPTION, 5, 1)
+#        count = self.get_elements_by_css_selector(BotResources.NO_OPTION)
+#        for i in range(len(count)):
+#            try:
+#                self.click_on_element(self.get_elements_by_css_selector(BotResources.NO_OPTION)[len(count) - 1])
+#                elements = self.get_elements_by_css_selector(BotResources.NO_OPTION_TEMPLATE)
+#                self.driver.execute_script("arguments[0].remove();", elements[len(elements) - 1])
+#            except Exception as e:
+#                print(e)
+#                pass
+
+#    def clear_history(self):
+#        self.wait_until_element_appear(By.CSS_SELECTOR, BotResources.NO_OPTION, 5, 1)
+#        count = self.get_elements_by_css_selector(BotResources.NO_OPTION)
+#        for i in range(len(count)):
+#            try:
+#                self.click_on_element(self.get_elements_by_css_selector(BotResources.NO_OPTION)[len(count) - 1])
+#                elements = self.get_elements_by_css_selector(BotResources.NO_OPTION_TEMPLATE)
+#                self.driver.execute_script("arguments[0].remove();", elements[len(elements) - 1])
+#            except Exception as e:
+#                print(e)
+#        time.sleep(5)    
+
+
+    def get_last_message_from_chat(self) -> str:
+        time.sleep(2)
+        self.wait_until_element_appear(By.CSS_SELECTOR, BotResources.MOVING_DOTS, 5, 1)
+        self.wait_until_element_disappear(By.CSS_SELECTOR, BotResources.MOVING_DOTS, 5, 1)
+        time.sleep(2)
+        messages = self.get_elements_by_css_selector(BotResources.MESSAGES)
+        messages =[self.get_element_text(message) for message in messages]
+        return messages[len(messages)-1]
+
+    #infra
+
+    def get_elements(self, by: By, resource_value: str) -> list:
+        try:
+            web_elements: list = self.driver.find_elements(by, resource_value)
+            return web_elements
+        except NoSuchElementException:
+            return []
+
+    def get_element_attribute(self, element: webelement, attribute_name: str) -> str:
+        if element:
+            return element.get_attribute(attribute_name)
+        return ''
+
+    def get_element_text(self, element: WebElement) -> str:
+        try:
+            if element:
+                text = element.text
+                if not text:
+                    return str.strip(self.get_element_attribute(element, "textContent"))
+                else:
+                    return str.strip(text)
+            else:
+                return ''
+        except StaleElementReferenceException:
+            return ''
+
+    def clear_text(self, element: WebElement) -> bool:
+        element.clear()
+        element_text = self.get_element_text(element)
+        return element_text == ''
+
+    def click_enter_key(self):
+        action = action_chains.ActionChains(self.driver)
+        action.send_keys(Keys.ENTER).perform()
+
+    def insert_text(self, element: WebElement, text_to_insert: str,
+                    delay_in_milliseconds: int = 10) -> bool:
+        if element:
+            self.clear_text(element)
+            element.click()
+            for c in text_to_insert:
+                element.send_keys(c)
+                time.sleep(delay_in_milliseconds / 1000)
+            time.sleep(1)
+            return True
+        return False
+
+    def insert_text_by_css_selector(self, css_selector: str, text_to_insert: str,
+                                    delay_in_milliseconds: int = None) -> bool:
+        delay_in_milliseconds = 10
+        element = self.get_element_by_css_selector(css_selector)
+        return self.insert_text(element, text_to_insert, delay_in_milliseconds)
+
+    def wait_until_element_disappear(self, by: By, locator, retry, seconds):
+        is_exists = len(self.driver.find_elements(by, locator)) > 0
+        while is_exists == True and retry > 0:
+            time.sleep(seconds)
+            retry = retry - 1
+            is_exists = len(self.driver.find_elements(by, locator)) > 0
+
+        if is_exists == False:
+            return True
+        else:
+            return False
+
+    def wait_until_element_appear(self, by: By, locator, retry, seconds):
+        is_not_exists = len(self.driver.find_elements(by, locator)) == 0
+        while is_not_exists == True and retry > 0:
+            time.sleep(seconds)
+            retry = retry - 1
+            is_not_exists = len(self.driver.find_elements(by, locator)) == 0
+
+        if is_not_exists == False:
+            return True
+        else:
+            return False
+
+    def get_elements_by_css_selector(self, css_selector: str) -> list:
+        return self.get_elements(By.CSS_SELECTOR, css_selector)
+
+    def click_on_element(self, element: WebElement) -> bool:
+        try:
+            if element:
+                element.click()
+                return True
+            return False
+        except (ElementClickInterceptedException, ElementNotInteractableException) as e:
+            return False
+
+    def click_on_element_by_css_selector(self, selector: str) -> bool:
+        element = self.get_element_by_css_selector(selector)
+        return self.click_on_element(element)
+
+    def get_element(self, by: By, value: str) -> WebElement:
+        try:
+            return self.driver.find_element(by, value)
+        except NoSuchElementException:
+            return None
+
+    def get_element_by_css_selector(self, css_selector: str):
+        return self.get_element(By.CSS_SELECTOR, css_selector)
+
+
+if __name__ == '__main__':
+
+    result = []
+    headers = ['Partner', 'Cycle', 'Set', 'Tester', 'FAQ#', 'PreAuth', 'Correct', 'input', 'Expected', 'Actual', 'Notes']
+
+    result.append(headers)
+    result_folder = os.path.join(ROOT_DIR, RESULT)
+    create_new_folder(result_folder)
+    df = create_dataframe_from_csv_file(os.path.join(ROOT_DIR, INPUT_CSV))
+
+    caps = DesiredCapabilities().CHROME
+    caps["pageLoadStrategy"] = "eager"
+    driver = webdriver.Chrome()
+    #chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    #chrome_options.add_experimental_option("useAutomationExtension", False)
+    #driver = webdriver.Chrome(desired_capabilities=caps,options=chrome_options)
+
+
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {
+            "source": """
+          Object.defineProperty(window, 'navigator', {
+              value: new Proxy(navigator, {
+                has: (target, key) => (key === 'webdriver' ? false : key in target),
+                get: (target, key) =>
+                  key === 'webdriver'
+                    ? undefined
+                    : typeof target[key] === 'function'
+                    ? target[key].bind(target)
+                    : target[key]
+              })
+          })
+                    """
+        },
+    )
+
+
+
+    for index, row in df.iterrows():
+        partner = row['Partner']
+        url = row['URL']
+        user_name = row['userId']
+        password = row['password']
+
+        # case:  pre_sign
+        pre_sign_df = create_dataframe_from_csv_file(os.path.join(ROOT_DIR, f'General - Automated Sanity Testing-BHW-NAM/resources/pre_sign.csv'))
+        pre_auth = False
+        time.sleep(2)
+        driver.get(url)
+        time.sleep(10)
+
+        for index, faq_row in pre_sign_df.iterrows():
+            partner_pre_sign = faq_row['Partner']
+            if partner.lower() == partner_pre_sign.lower():
+                cycle = faq_row['Cycle']
+                sett = faq_row['Set']
+                tester = faq_row['Tester']
+                faq_number = faq_row['FAQ #']
+                utterance = faq_row['Utterance'].strip()
+                expected_utterance = faq_row['Expected Utterance'].strip()
+                bot = BotActions(driver)
+                bot.insert_message(utterance)
+                message = bot.get_last_message_from_chat()
+                correct = message == expected_utterance
+                screenshot = '' if correct else driver.save_screenshot(os.path.join(result_folder, f'{partner}_PreLogin_{faq_number}.png'))
+                if screenshot:
+                    screenshot = os.path.join(result_folder, f'{partner}_{faq_number}.png')
+                result.append([partner, cycle, sett, tester, faq_number, pre_auth, correct, utterance, expected_utterance, message, screenshot])
+
+
+            # case:  post_sign
+
+        post_sign_df = create_dataframe_from_csv_file(
+            os.path.join(ROOT_DIR, f'General - Automated Sanity Testing-BHW-NAM/resources/post_sign.csv'))
+        pre_auth = True
+        login = LoginActions(driver, url, user_name, password)
+        bot = BotActions(driver)
+        #bot.clear_history()
+        for index, faq_row in post_sign_df.iterrows():
+            partner_post_sign = faq_row['Partner']
+            if partner.lower() == partner_post_sign.lower():
+                cycle = faq_row['Cycle']
+                sett = faq_row['Set']
+                tester = faq_row['Tester']
+                faq_number = faq_row['FAQ #']
+                utterance = faq_row['Utterance'].strip()
+                expected_utterance = faq_row['Expected Utterance'].strip()
+                bot.insert_message(utterance)
+                message = bot.get_last_message_from_chat()
+                correct = message == expected_utterance
+                screenshot = '' if correct else driver.save_screenshot(
+                    os.path.join(result_folder, f'{partner}_{faq_number}.png'))
+                if screenshot:
+                    screenshot = os.path.join(result_folder, f'{partner}_{faq_number}.png')
+                result.append([partner, cycle, sett, tester, faq_number, pre_auth, correct, utterance, expected_utterance, message, screenshot])
+                                
+
+        create_new_csv(result_folder, partner, result)
+
+    driver.quit()
+    print('done')
