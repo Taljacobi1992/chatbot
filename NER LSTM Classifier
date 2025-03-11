@@ -1,0 +1,261 @@
+# --- imports ---
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from datasets import load_dataset
+from transformers import AutoTokenizer
+from tqdm.auto import tqdm
+import torch.optim as optim
+from sklearn.metrics import classification_report, accuracy_score
+import matplotlib.pyplot as plt  # Import matplotlib
+import numpy as np
+
+# Check if CUDA is available
+print("CUDA Available: ", torch.cuda.is_available())
+
+# List available GPUs
+print("Number of GPUs: ", torch.cuda.device_count())
+
+# Get the name of the current device
+print("Current CUDA Device: ", torch.cuda.get_device_name(torch.cuda.current_device()))
+
+# --- 1. Data Loading and Preprocessing ---
+
+class NERDataset(Dataset):
+    def __init__(self, dataset, tokenizer, max_length=128):
+        self.dataset = dataset
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.ner_tags = sorted(list(set(str(tag) for example in self.dataset for tag in example['tags'])))
+        self.tag_to_idx = {tag: idx for idx, tag in enumerate(self.ner_tags)}
+        self.idx_to_tag = {idx: tag for tag, idx in self.tag_to_idx.items()}
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        example = self.dataset[idx]
+        tokens = example['tokens']
+        ner_tags = example['tags']
+        encoding = self.tokenizer(tokens, is_split_into_words=True, padding='max_length', truncation=True, max_length=self.max_length, return_tensors='pt')
+        labels = [self.tag_to_idx[str(tag)] for tag in ner_tags]
+        labels = labels[:self.max_length]
+        labels += [-100] * (self.max_length - len(labels))
+        labels = torch.tensor(labels)
+        return {'input_ids': encoding['input_ids'].squeeze(), 'attention_mask': encoding['attention_mask'].squeeze(), 'labels': labels}
+
+# --- 2. Model Definition ---
+
+class LSTMNER(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, n_layers, bidirectional, dropout, recurrent_dropout):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers=n_layers, bidirectional=bidirectional, dropout=recurrent_dropout, batch_first=True)
+        self.batch_norm = nn.BatchNorm1d(hidden_dim * 2 if bidirectional else hidden_dim)
+        self.fc = nn.Linear(hidden_dim * 2 if bidirectional else hidden_dim, output_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, input_ids, attention_mask):
+        embedded = self.dropout(self.embedding(input_ids))
+        outputs, (hidden, cell) = self.lstm(embedded)
+        outputs = outputs.permute(0, 2, 1)
+        outputs = self.batch_norm(outputs)
+        outputs = outputs.permute(0, 2, 1)
+        predictions = self.fc(self.dropout(outputs))
+        return predictions
+# --- 3. Training Loop (Modified for Metric Tracking) ---
+
+def train(model, iterator, optimizer, criterion, device, clip_value):
+    model.train()
+    epoch_loss = 0
+    all_predictions = []
+    all_labels = []
+
+    for batch in tqdm(iterator, desc="Training"):
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
+        labels = batch['labels'].to(device)
+
+        optimizer.zero_grad()
+        predictions = model(input_ids, attention_mask)
+        predictions = predictions.view(-1, predictions.shape[-1])
+        labels = labels.view(-1)
+
+        loss = criterion(predictions, labels)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_value)
+        optimizer.step()
+
+        epoch_loss += loss.item()
+
+        # --- Compute Accuracy (for this batch) ---
+        valid_indices = labels != -100
+        valid_predictions = torch.argmax(predictions, dim=-1)[valid_indices].cpu().tolist()
+        valid_labels = labels[valid_indices].cpu().tolist()
+        all_predictions.extend(valid_predictions)
+        all_labels.extend(valid_labels)
+
+    # Compute overall accuracy for the epoch
+    epoch_accuracy = accuracy_score(all_labels, all_predictions)
+    return epoch_loss / len(iterator), epoch_accuracy  # Return accuracy
+
+# --- 4. Evaluation Loop (Modified for Metric Tracking) ---
+
+def evaluate(model, iterator, criterion, device, tag_names):
+    model.eval()
+    epoch_loss = 0
+    all_predictions = []
+    all_labels = []
+
+    with torch.no_grad():
+        for batch in tqdm(iterator, desc="Evaluating"):
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
+            predictions = model(input_ids, attention_mask)
+            predictions = predictions.view(-1, predictions.shape[-1])
+            labels = labels.view(-1)
+            loss = criterion(predictions, labels)
+            epoch_loss += loss.item()
+            valid_indices = labels != -100
+            valid_predictions = torch.argmax(predictions, dim=-1)[valid_indices].cpu().tolist()
+            valid_labels = labels[valid_indices].cpu().tolist()
+            all_predictions.extend(valid_predictions)
+            all_labels.extend(valid_labels)
+
+    print(classification_report(all_labels, all_predictions, target_names=tag_names))
+    epoch_accuracy = accuracy_score(all_labels, all_predictions)  # Calculate accuracy
+    return epoch_loss / len(iterator), epoch_accuracy # Return accuracy
+
+# --- 5. Prediction ---
+
+def predict_ner(text, model, tokenizer, dataset_obj, device):
+    model.eval()
+    if isinstance(text, str):
+        tokens = text.split()
+    else:
+        tokens = text
+    encoding = tokenizer(tokens, is_split_into_words=True, return_tensors='pt', padding=True, truncation=True)
+    input_ids = encoding['input_ids'].to(device)
+    attention_mask = encoding['attention_mask'].to(device)
+    with torch.no_grad():
+        predictions = model(input_ids, attention_mask)
+    predicted_indices = torch.argmax(predictions, dim=-1).squeeze().tolist()
+    predicted_tags = [dataset_obj.idx_to_tag[idx] for i, idx in enumerate(predicted_indices) if i < len(tokens)]
+    results = list(zip(tokens, predicted_tags))
+    return results
+
+# --- 6. Main Execution ---
+
+if __name__ == '__main__':
+    # --- Hyperparameters ---
+    BATCH_SIZE = 32
+    EMBEDDING_DIM = 100
+    HIDDEN_DIM = 256
+    N_LAYERS = 2
+    BIDIRECTIONAL = True
+    DROPOUT = 0.5
+    RECURRENT_DROPOUT = 0.3
+    LEARNING_RATE = 0.001
+    WEIGHT_DECAY = 1e-4
+    CLIP_VALUE = 1.0
+    N_EPOCHS = 10
+    PATIENCE = 3
+    MAX_LENGTH = 128
+
+    # --- Load Dataset and Tokenizer ---
+    dataset = load_dataset("tner/conll2003")
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+    train_dataset = NERDataset(dataset['train'], tokenizer, MAX_LENGTH)
+    val_dataset = NERDataset(dataset['validation'], tokenizer, MAX_LENGTH)
+    test_dataset = NERDataset(dataset['test'], tokenizer, MAX_LENGTH)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+
+    # --- Initialize Model, Optimizer, and Loss ---
+    VOCAB_SIZE = tokenizer.vocab_size
+    OUTPUT_DIM = len(train_dataset.tag_to_idx)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = LSTMNER(VOCAB_SIZE, EMBEDDING_DIM, HIDDEN_DIM, OUTPUT_DIM, N_LAYERS, BIDIRECTIONAL, DROPOUT, RECURRENT_DROPOUT).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    criterion = nn.CrossEntropyLoss(ignore_index=-100).to(device)
+
+    # --- Lists to Store Metrics ---
+    train_losses = []
+    train_accuracies = []
+    val_losses = []
+    val_accuracies = []
+
+    # --- Training Loop with Early Stopping and Metric Tracking ---
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+
+    for epoch in range(N_EPOCHS):
+        train_loss, train_accuracy = train(model, train_loader, optimizer, criterion, device, CLIP_VALUE)
+        val_loss, val_accuracy = evaluate(model, val_loader, criterion, device, train_dataset.ner_tags)
+
+        print(f'Epoch: {epoch+1:02}')
+        print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_accuracy:.2f}%')
+        print(f'\t Val. Loss: {val_loss:.3f} |  Val. Acc: {val_accuracy:.2f}%')
+
+        # --- Store Metrics ---
+        train_losses.append(train_loss)
+        train_accuracies.append(train_accuracy)
+        val_losses.append(val_loss)
+        val_accuracies.append(val_accuracy)
+
+        # --- Early Stopping ---
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), 'ner-model.pt')
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve == PATIENCE:
+                print('Early stopping!')
+                break
+
+# --- Plotting Metrics ---
+
+epochs = np.arange(1, len(train_losses) + 1)
+
+plt.figure(figsize=(12, 5))
+
+# Plot Loss
+plt.subplot(1, 2, 1)
+plt.plot(epochs, train_losses, label='Training Loss')
+plt.plot(epochs, val_losses, label='Validation Loss')
+plt.title('Training and Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+
+# Plot Accuracy
+plt.subplot(1, 2, 2)
+plt.plot(epochs, train_accuracies, label='Training Accuracy')
+plt.plot(epochs, val_accuracies, label='Validation Accuracy')
+plt.title('Training and Validation Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# --- Evaluation and Prediction (same as before) ---
+print("Evaluating on Test Set:")
+model.load_state_dict(torch.load('ner-model.pt'))
+test_loss, test_accuracy = evaluate(model, test_loader, criterion, device, train_dataset.ner_tags)  # Get test accuracy
+print(f'Test Loss: {test_loss:.3f} | Test Acc: {test_accuracy:.2f}%')
+
+# --- Prediction Example ---
+example_text_pretokenized = ['EU', 'rejects', 'German', 'call', 'to', 'boycott', 'British', 'lamb', '.']
+predictions_pretokenized = predict_ner(example_text_pretokenized, model, tokenizer, train_dataset, device)
+print("\nPre-tokenized Input Prediction:")
+print(predictions_pretokenized)
+
+example_text_string = "EU rejects German call to boycott British lamb."
+predictions_string = predict_ner(example_text_string, model, tokenizer, train_dataset, device)
+print("\nString Input Prediction:")
+print(predictions_string)
